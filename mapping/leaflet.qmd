@@ -1,0 +1,194 @@
+---
+title: "Dynamic Mapping in R using `leaflet` package"
+author: "Ankur Singhal"
+project: html
+toc: true
+---
+
+## Spatial analysis + mapping packages
+
+This tutorial is focused on dynamic mapping in R using the `leaflet` package but below are some references for spatial analysis, and static and dynamic mapping in R.
+
+### Spatial analysis 
+
+For spatial analysis, I recommend the `sf` and `terra` packages. You may sometimes see the `sp` package but it's a very old package and I would suggest that, unless there is a very specific need, you look to the `sf` and `terra` packages. 
+
+`sf` package is the industry standard for geospatial analysis. It has all the features we need for the work that we do and has extensive documentation + support on GitHub + stackoverflow. Plus, there is a solid community that uses it so any issues you post on Twitter or other forum will likely fetch multiple helpful responses. `sf` is also compatible with the pipe `%>%` operator and the tidyverse framework, which makes integration into your existing workflow pretty seamless. 
+
+`terra` is a newer package and will likely supersede the `sf` package at some point because it's significantly faster than the `sf` packaes. However, it can be difficult to pick up and doesn't have the community at large using it extensively. The biggest flaw in my opinion is that it is not compatible with the tidyerse framework and many other packages that rely on spatial datasets won't recognize `terra` signature as a valid one. 
+
+For now, I would suggest that you mostly stick to `sf` package unless you identify a specific need, e.g., computational speed, in which case use `terra`. 
+
+### Dynamic mapping 
+
+The best package for dynamic mapping is `leaflet`, which is built on the leaflet JS library. It has a huge community that uses it and has extensive support system online. Plus, it's super easy to use and is similar to `ggplot` where you just add layers on top of your basemap. It uses `sf` signatures natively, which makes integration with spatial analysis quite easy. 
+
+Another package is `mapdeck`, which is built on the Mapbox and Deck.gl JS libraries. `mapdeck` has many more layer options compared to leaflet (see <https://symbolixau.github.io/mapdeck/articles/layers.html>), but it is clunkier, more error prone, and in my experience, slower. It is helpful though if there is a specific need for 3D mapping, e.g., column maps or hexagon map, because it is native to `mapdeck`. In most other cases, I would strongly recommend `leaflet`. 
+
+### Static mapping
+
+Last topic is generation of static maps for insertion into reports, etc. There are quite a few options for this, but the two best libraries are `tmap` and your regular old `ggplot` with *geom_sf* and *coord_sf* for adding spatial layers. Documentation is extensive for both, but I have created some beautiful maps with basic `ggplot`. 
+
+## Dynamic mapping using `leaflet`
+
+On to the good stuff. Basemap is as easy to add as calling *leaflet*. Additional layers are just added using the `%>%` operator. For example, to add simple tiles you can use *addTiles()*. If you want to add custom tiles, like topo, terrain, satellite, you can add use *addProviderTiles()*. You can even add layer tiles. See examples below. 
+
+```{r}
+#| include: false
+#| echo: false
+library(tidyverse) 
+library(sf) 
+library(leaflet) 
+```
+
+```{r}
+# Create a base map
+leaflet() %>% 
+  addTiles()
+```
+
+
+```{r}
+# Add custom tiles with satellite image layered with names from CartoDB.Positron
+m <- leaflet() %>% 
+  addProviderTiles(providers$Esri.WorldImagery) %>% 
+  addProviderTiles(providers$CartoDB.PositronOnlyLabels)
+m
+```
+
+We can set default view using *setView()* to something more sensible -- let's say Newton, MA -- and also add a marker at EH&E using *addMarkers()*. 
+
+```{r}
+m %>% 
+  # set default view to Newton, MA with a zoom of 10. 
+  setView(lat = 42.33922138246757, lng = -71.20974365952047, zoom = 12) %>% 
+  # add place marker at EH&E
+  addMarkers(
+    lat = 42.29420740160597, 
+    lng = -71.19814997290119, 
+    label = "EH&E", 
+    labelOptions = labelOptions(noHide = T) # permanent label instead of hover
+  )
+```
+
+Easy so far. But let's take it one step further. In most cases, you wouldn't want to input lat and long info but would rather import them from a database. So, let's create a dataframe to simulate that. We'll add coordinates for EH&E and add some favorite restaurant spots on the map. 
+
+```{r}
+# create df 
+df <- tribble( 
+  ~name, ~lat, ~long, 
+  'EH&E',42.29420740160597, -71.19814997290119, 
+  'Orinoco', 42.33413422354223, -71.11910126859661, 
+  'Mahaniyom', 42.33288039869683, -71.11883061341418,
+  'New England Soup Factory', 42.30979156661836, -71.21432894107556, 
+  'Pressed Cafe', 42.31045278596852, -71.21466386187996,
+  'Delfino', 42.2885249336141, -71.12967796508367, 
+  'Common', 42.25602776956936, -71.03517286903968
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addMarkers(
+    data = df, 
+    lat = ~lat, 
+    lng = ~long, 
+    label = ~name
+  )
+```
+
+Ok, that's cool but pretty boring. Let's add some more layers. Say we want to plot circles instead of markers at each location based on whether the restaurant is a lucnh or dinner location. (You can also add change the color of the icons but that's something for you to explore on your own.) 
+
+We'll also convert our data from a standard dataframe to *simple features* dataframe (hence sf) so we don't have to specify lat and long every time. In this type of dataframe, the geometry of each row gets tied to it as a new column.  
+
+
+```{r}
+# add new cols to the dataframe
+df$category <- c('Office', 'Dinner', 'Dinner', 'Lunch', 'Lunch', 'Dinner', 'Dinner') 
+
+# convert to sf dataframe
+sfdf <- st_as_sf(df, coords = c('long', 'lat'), remove = F)
+sfdf
+
+```
+
+Now, as you can see above, each row has a new geometry column named *geometry* which contains the spatial information about that location. In this case, we have a point geometry, i.e., one lat and one long. Later, we'll see a polygonal geometry, where having an sf dataframe is a requirement because this infomation cannot be captured easily in one or two columns. 
+
+Let's get mapping! We'll use the *addCircleMarkers()* function to add circles. 
+
+```{r}
+ehe <- sfdf[sfdf$name == 'EH&E', ]
+restos <- sfdf[sfdf$name != 'EH&E', ]
+
+# In order to color, we have to first create a palette. Since we have a categorical column, we'll use colorFactor. 
+# This is perhaps the most annoying part of leaflet
+pal <- colorFactor('Dark2', restos$category)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.DarkMatter) %>% 
+  addMarkers(
+    data = ehe,
+    label = ~name,
+    labelOptions = labelOptions(noHide = T)
+  ) %>% 
+  addCircleMarkers(
+    data = restos,
+    color = 'white', # stroke color (circle boundaries)
+    opacity = 1, # stroke opacity
+    weight = 1.5, # width of stroke color
+    fillColor = ~pal(category), # fill color based on our palette
+    fillOpacity = 1, # opacity of 1
+    radius = 14, # circle radius
+    label = ~name
+  )
+```
+
+Now we are getting somewhere. But let's make it more interesting by setting the size of the circles based on distance from EH&E. To do this, we'll use the *st_distance()* funciton from the `sf` package. 
+
+```{r}
+# calculate distance from EH&E
+restos$distance <- c(st_distance(ehe, restos))
+
+m <- leaflet() %>% 
+  addProviderTiles(providers$CartoDB.DarkMatter) %>% 
+  addMarkers(
+    data = ehe,
+    label = ~name,
+    labelOptions = labelOptions(noHide = T)
+  ) %>% 
+  addCircleMarkers(
+    data = restos,
+    color = 'white', # stroke color (circle boundaries)
+    opacity = 1, # stroke opacity
+    weight = 1.5, # width of stroke color
+    fillColor = ~pal(category), # fill color based on our palette
+    fillOpacity = 1, # opacity of 1
+    radius = ~distance*250, # circle radius based on distance from EH&E and scaled so circles aren't teeny
+    label = ~name
+  )
+m
+```
+
+Let's add one final layer by drawing out the boundary of Newton, MA. We'll use the awesome `tigris` packages to get the boundary information, which uses the TIGER shape files from US census I believe. We can also add custom boundaries by creating boundaries in Google Earth and importing them. Possibly another tutorial right there!
+
+We'll use the *addPolygons* function to plot Newton boundary to our existing map. 
+
+```{r}
+#| output: false
+
+newton <- tigris::places('Massachusetts', cb = T) %>% 
+  tigris::filter_place('Newton')
+```
+
+```{r}
+#| warning: false
+m %>% 
+  addPolygons(
+    data = newton, 
+    fillOpacity = 0.1,
+    color = 'lightblue', 
+    weight = 2, 
+    opacity = 1
+  )
+```
+
+Neato! The possibilities are infinite-adjacent. You can do a lot pretty quickly and easily, e.g., change the markers, color the markers, draw and color polygons based on a column, etc. Best way to learn though is to take a project and try it. 
